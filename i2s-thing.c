@@ -1,6 +1,7 @@
 #include <evl/file.h>
 #include <evl/flag.h>
 #include <linux/dmaengine.h>
+#include <linux/dma-mapping.h>
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -56,15 +57,22 @@
 #define DREQ_RX_PANIC(val)	(val << 16)
 #define DREQ_TX_PANIC(val)	(val << 24)
 
-struct i2s_thing_init
+struct i2s_thing_settings
 {
 	unsigned int buffer_size;
 };
 
 struct i2s_thing_dma_buffer
 {
+	size_t size;
+	size_t length;
+	s16* ptr;
 	dma_addr_t dma_address;
 };
+
+// IOCTL
+#define I2S_THING_IOCTL	0x10
+#define I2S_THING_START _IOW(I2S_THING_IOCTL, 0x01, struct i2s_thing_settings)
 
 static int major_number;
 static struct class *device_class = NULL;
@@ -80,10 +88,6 @@ struct regmap	*regmap;
 
 struct i2s_thing_dma_buffer tx_buffer;
 struct i2s_thing_dma_buffer rx_buffer;
-
-// IOCTL
-#define I2S_THING_IOCTL	0x10
-#define I2S_THING_START _IOW(I2S_THING_IOCTL, 0x01, struct i2s_thing_init)
 
 static int i2s_thing_probe(struct platform_device *pdev);
 static int i2s_thing_remove(struct platform_device *pdev);
@@ -101,7 +105,7 @@ static struct file_operations i2s_thing_fops =
 	.release = i2s_thing_release,
 	.oob_read = i2s_thing_read,
 	.oob_write = i2s_thing_write,
-	.oob_ioctl = i2s_thing_ioctl,
+	.unlocked_ioctl = i2s_thing_ioctl,
 };
 
 static const struct of_device_id i2s_thing_of_match[] = {
@@ -131,20 +135,18 @@ static const struct regmap_config i2s_thing_regmap_config = {
 
 static struct dma_slave_config i2s_thing_dma_config =
 {
-	.dst_addr_width = sizeof(u32),
-	.src_addr_width = sizeof(u32),
+	.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
+	.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
+	.src_maxburst = 2,
+	.dst_maxburst = 2,
 };
 
-typedef void (*dma_async_tx_callback)(void *dma_async_param);
-
-static void dma_tx_complete(void *dma_async_param)
+static void dma_tx_complete(void *param)
 {
-
 }
 
-static void dma_rx_complete(void *dma_async_param)
+static void dma_rx_complete(void *param)
 {
-
 }
 
 static int config_dma_channel(struct device* dev, struct dma_chan** dma_chan, const char* name)
@@ -167,13 +169,15 @@ static int alloc_dma_buffer(struct i2s_thing_dma_buffer* buffer, unsigned int si
 {
 	void* buffer_ptr;
 	
-	buffer_ptr = devm_kzalloc(i2s_device, PAGE_ALIGN(size), GFP_KERNEL);
+	buffer_ptr = dma_alloc_coherent(i2s_device, PAGE_ALIGN(size), &buffer->dma_address, GFP_KERNEL);
 	if (!buffer_ptr)
 	{
 		return -ENOMEM;
 	}
 
-	buffer->dma_address = page_to_phys(virt_to_page(buffer_ptr));
+	buffer->size = size;
+	buffer->length = size / sizeof(s16);
+	buffer->ptr = (s16*)buffer_ptr;
 
 	return 0;
 }
@@ -189,7 +193,9 @@ static int start_dma(struct dma_chan *dma_chan, dma_addr_t dma_address, unsigned
 	}
 
 	desc->callback = callback;
+
 	dmaengine_submit(desc);
+	dma_async_issue_pending(dma_chan);
 
 	return 0;
 }
@@ -291,7 +297,13 @@ static int i2s_thing_probe(struct platform_device *pdev)
 
 static int i2s_thing_remove(struct platform_device *pdev)
 {
+	dma_free_coherent(i2s_device, tx_buffer.size, tx_buffer.ptr, tx_buffer.dma_address);
+	dma_free_coherent(i2s_device, rx_buffer.size, rx_buffer.ptr, rx_buffer.dma_address);
+
+    dmaengine_terminate_sync(dma_chan_tx);
 	dma_release_channel(dma_chan_tx);
+
+    dmaengine_terminate_sync(dma_chan_rx);
 	dma_release_channel(dma_chan_rx);
 
 	return 0;
@@ -342,12 +354,22 @@ static int i2s_thing_start(unsigned int buffer_size)
 {
 	int ret;
 	unsigned int bits;
+	size_t i;
+	unsigned int buffer_size_bytes;
+
+	buffer_size_bytes = buffer_size * sizeof(s16);
 
 	// Allocate DMA buffers
-	ret = alloc_dma_buffer(&tx_buffer, buffer_size);
+	ret = alloc_dma_buffer(&tx_buffer, buffer_size_bytes);
 	if (ret) { return ret; }
-	ret = alloc_dma_buffer(&rx_buffer, buffer_size);
+	ret = alloc_dma_buffer(&rx_buffer, buffer_size_bytes);
 	if (ret) { return ret; }
+
+	// Write a test pattern to tx buffer
+	for (i = 0; i < buffer_size; ++i)
+	{
+		tx_buffer.ptr[i] = (i / 16) % 2 ? -30000 : 30000;
+	}
 
 	// Enable DMA
 	start_dma(dma_chan_tx, tx_buffer.dma_address, buffer_size, DMA_MEM_TO_DEV, dma_tx_complete);
@@ -371,7 +393,7 @@ static int i2s_thing_start(unsigned int buffer_size)
 	regmap_write(regmap, DREQ_A, DREQ_TX_REQ(0x30) | DREQ_TX_PANIC(0x10) | DREQ_RX_REQ(0x20) | DREQ_RX_PANIC(0x30));
 
 	// Enable transmission
-	bits = CS_DMAEN | CS_TXON;
+	bits = CS_DMAEN | CS_TXON | CS_RXON;
 	regmap_update_bits(regmap, CS_A, bits, bits);
 
 	return 0;
@@ -382,8 +404,8 @@ static long i2s_thing_ioctl(struct file *file, unsigned int cmd, unsigned long a
 	switch (cmd)
 	{
 	case I2S_THING_START:
-		struct i2s_thing_init __user *init = (struct i2s_thing_init __user *)arg;
-		return i2s_thing_start(init->buffer_size);
+		struct i2s_thing_settings __user *settings = (struct i2s_thing_settings __user *)arg;
+		return i2s_thing_start(settings->buffer_size);
 
 	default:
 		return -EINVAL;
