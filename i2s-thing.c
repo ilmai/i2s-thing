@@ -405,12 +405,6 @@ static int i2s_thing_start(unsigned int buffer_size)
 		return ret;
 	}
 
-	// Write a test pattern to tx buffer
-	for (i = 0; i < buffer_size; ++i)
-	{
-		tx_buffer.ptr[i] = (i / 16) % 2 ? -30000 : 30000;
-	}
-
 	// Enable DMA
 	start_dma(dma_chan_tx, tx_buffer.dma_address, buffer_size, DMA_MEM_TO_DEV, dma_tx_complete);
 	start_dma(dma_chan_rx, rx_buffer.dma_address, buffer_size, DMA_DEV_TO_MEM, dma_rx_complete);
