@@ -25,20 +25,65 @@
 #define GRAY		0x20
 
 // Register fields
+#define CS_EN		BIT(0)
+#define CS_RXON		BIT(1)
+#define CS_TXON		BIT(2)
+#define CS_TXCLR	BIT(3)
+#define CS_RXCLR	BIT(4)
+#define CS_DMAEN	BIT(9)
+#define CS_STBY		BIT(25)
+
+#define MODE_FSLEN(val)	(val)
+#define MODE_FLEN(val)	((val - 1) << 10)
+#define MODE_FSI		BIT(20)
+#define MODE_FSM		BIT(21)
+#define MODE_CLKI		BIT(22)
+#define MODE_CLKM		BIT(23)
+#define MODE_FTXP		BIT(24)
+#define MODE_FRXP		BIT(25)
+
+#define XC_CH2WID(val)	(val)
+#define XC_CH2POS(val)	(val << 4)
+#define XC_CH2EN		BIT(14)
+#define XC_CH2WEX		BIT(15)
+#define XC_CH1WID(val)	(val << 16)
+#define XC_CH1POS(val)	(val << 20)
+#define XC_CH1EN		BIT(30)
+#define XC_CH1WEX		BIT(31)
+
+#define DREQ_RX_REQ(val)	(val)
+#define DREQ_TX_REQ(val)	(val << 8)
+#define DREQ_RX_PANIC(val)	(val << 16)
+#define DREQ_TX_PANIC(val)	(val << 24)
+
+struct i2s_thing_init
+{
+	unsigned int buffer_size;
+};
+
+struct i2s_thing_dma_buffer
+{
+	dma_addr_t dma_address;
+};
 
 static int major_number;
 static struct class *device_class = NULL;
 static struct device *char_device = NULL;
+static struct device *i2s_device = NULL;
 static struct evl_file efile;
 static struct evl_flag eflag;
 static bool char_device_opened = false;
 
-struct i2s_thing_device
-{
-	struct dma_chan *dma_chan_tx;
-	struct dma_chan *dma_chan_rx;
-	struct regmap	*regmap;
-};
+struct dma_chan *dma_chan_tx;
+struct dma_chan *dma_chan_rx;
+struct regmap	*regmap;
+
+struct i2s_thing_dma_buffer tx_buffer;
+struct i2s_thing_dma_buffer rx_buffer;
+
+// IOCTL
+#define I2S_THING_IOCTL	0x10
+#define I2S_THING_START _IOW(I2S_THING_IOCTL, 0x01, struct i2s_thing_init)
 
 static int i2s_thing_probe(struct platform_device *pdev);
 static int i2s_thing_remove(struct platform_device *pdev);
@@ -84,11 +129,70 @@ static const struct regmap_config i2s_thing_regmap_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-struct dma_slave_config i2s_thing_dma_config =
+static struct dma_slave_config i2s_thing_dma_config =
 {
 	.dst_addr_width = sizeof(u32),
 	.src_addr_width = sizeof(u32),
 };
+
+typedef void (*dma_async_tx_callback)(void *dma_async_param);
+
+static void dma_tx_complete(void *dma_async_param)
+{
+
+}
+
+static void dma_rx_complete(void *dma_async_param)
+{
+
+}
+
+static int config_dma_channel(struct device* dev, struct dma_chan** dma_chan, const char* name)
+{
+	*dma_chan = dma_request_chan(dev, name);
+
+	if (IS_ERR(*dma_chan))
+	{
+		dev_err(dev, "DMA TX channel request failed\n");
+		*dma_chan = NULL;
+		return PTR_ERR(*dma_chan);
+	}
+
+	dmaengine_slave_config(*dma_chan, &i2s_thing_dma_config);
+
+	return 0;
+}
+
+static int alloc_dma_buffer(struct i2s_thing_dma_buffer* buffer, unsigned int size)
+{
+	void* buffer_ptr;
+	
+	buffer_ptr = devm_kzalloc(i2s_device, PAGE_ALIGN(size), GFP_KERNEL);
+	if (!buffer_ptr)
+	{
+		return -ENOMEM;
+	}
+
+	buffer->dma_address = page_to_phys(virt_to_page(buffer_ptr));
+
+	return 0;
+}
+
+static int start_dma(struct dma_chan *dma_chan, dma_addr_t dma_address, unsigned int buffer_size, enum dma_transfer_direction direction, dma_async_tx_callback callback)
+{
+	struct dma_async_tx_descriptor *desc;
+
+	desc = dmaengine_prep_dma_cyclic(dma_chan, dma_address, buffer_size, buffer_size / 2, direction, DMA_OOB_INTERRUPT);
+	if (!desc)
+	{
+		return -EBUSY;
+	}
+
+	desc->callback = callback;
+	dmaengine_submit(desc);
+
+	return 0;
+}
 
 static int __init i2s_thing_init(void)
 {
@@ -146,37 +250,11 @@ static void __exit i2s_thing_exit(void)
 	class_destroy(device_class);
 }
 
-static int config_dma_channel(struct device* dev, struct dma_chan** dma_chan, const char* name)
-{
-	*dma_chan = dma_request_chan(dev, name);
-
-	if (IS_ERR(*dma_chan))
-	{
-		dev_err(dev, "DMA TX channel request failed\n");
-		*dma_chan = NULL;
-		return PTR_ERR(*dma_chan);
-	}
-
-	dmaengine_slave_config(*dma_chan, &i2s_thing_dma_config);
-
-	return 0;
-}
-
 static int i2s_thing_probe(struct platform_device *pdev)
 {
-	struct i2s_thing_device *i2s_thing_dev;
 	void __iomem *register_address;
 	const __be32 *dma_address_be32;
 	dma_addr_t dma_address;
-
-	// Custom device data
-	i2s_thing_dev = devm_kzalloc(&pdev->dev, sizeof(*i2s_thing_dev), GFP_KERNEL);
-	if (!i2s_thing_dev)
-	{
-		return -ENOMEM;
-	}
-
-	dev_set_drvdata(&pdev->dev, i2s_thing_dev);
 
 	// Register map
 	register_address = devm_platform_ioremap_resource(pdev, 0);
@@ -185,10 +263,10 @@ static int i2s_thing_probe(struct platform_device *pdev)
 		return PTR_ERR(register_address);
 	}
 
-	i2s_thing_dev->regmap = devm_regmap_init_mmio(&pdev->dev, register_address, &i2s_thing_regmap_config);
-	if (IS_ERR(i2s_thing_dev->regmap))
+	regmap = devm_regmap_init_mmio(&pdev->dev, register_address, &i2s_thing_regmap_config);
+	if (IS_ERR(regmap))
 	{
-		return PTR_ERR(i2s_thing_dev->regmap);
+		return PTR_ERR(regmap);
 	}
 
 	// DMA
@@ -203,20 +281,18 @@ static int i2s_thing_probe(struct platform_device *pdev)
 	i2s_thing_dma_config.src_addr = dma_address + FIFO_A;
 	i2s_thing_dma_config.dst_addr = dma_address + FIFO_A;
 
-	config_dma_channel(&pdev->dev, &i2s_thing_dev->dma_chan_tx, "tx");
-	config_dma_channel(&pdev->dev, &i2s_thing_dev->dma_chan_rx, "rx");
+	config_dma_channel(&pdev->dev, &dma_chan_tx, "tx");
+	config_dma_channel(&pdev->dev, &dma_chan_rx, "rx");
+
+	i2s_device = &pdev->dev;
 
 	return 0;
 }
 
 static int i2s_thing_remove(struct platform_device *pdev)
 {
-	struct i2s_thing_device *i2s_thing_dev;
-
-	i2s_thing_dev = dev_get_drvdata(&pdev->dev);
-	
-	dma_release_channel(i2s_thing_dev->dma_chan_tx);
-	dma_release_channel(i2s_thing_dev->dma_chan_rx);
+	dma_release_channel(dma_chan_tx);
+	dma_release_channel(dma_chan_rx);
 
 	return 0;
 }
@@ -262,8 +338,57 @@ static ssize_t i2s_thing_write(struct file *file, const char __user *buf, size_t
 	return 0;
 }
 
+static int i2s_thing_start(unsigned int buffer_size)
+{
+	int ret;
+	unsigned int bits;
+
+	// Allocate DMA buffers
+	ret = alloc_dma_buffer(&tx_buffer, buffer_size);
+	if (ret) { return ret; }
+	ret = alloc_dma_buffer(&rx_buffer, buffer_size);
+	if (ret) { return ret; }
+
+	// Enable DMA
+	start_dma(dma_chan_tx, tx_buffer.dma_address, buffer_size, DMA_MEM_TO_DEV, dma_tx_complete);
+	start_dma(dma_chan_rx, rx_buffer.dma_address, buffer_size, DMA_DEV_TO_MEM, dma_rx_complete);
+
+	// Enable PCM device and clear standby
+	regmap_write(regmap, CS_A, CS_EN | CS_STBY);
+
+	// Change settings
+	regmap_write(regmap, MODE_A, MODE_FSM | MODE_CLKM | MODE_FSI | MODE_CLKI | MODE_FTXP | MODE_FRXP | MODE_FLEN(64));
+
+	bits = XC_CH1EN | XC_CH1POS(1) | XC_CH1WID(16) | XC_CH2EN | XC_CH2POS(33) | XC_CH2WID(16);
+	regmap_write(regmap, TXC_A, bits);
+	regmap_write(regmap, RXC_A, bits);
+
+	// Clear FIFO
+	bits = CS_RXCLR | CS_TXCLR;
+	regmap_update_bits(regmap, CS_A, bits, bits);
+
+	// Set up DREQ
+	regmap_write(regmap, DREQ_A, DREQ_TX_REQ(0x30) | DREQ_TX_PANIC(0x10) | DREQ_RX_REQ(0x20) | DREQ_RX_PANIC(0x30));
+
+	// Enable transmission
+	bits = CS_DMAEN | CS_TXON;
+	regmap_update_bits(regmap, CS_A, bits, bits);
+
+	return 0;
+}
+
 static long i2s_thing_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
+	switch (cmd)
+	{
+	case I2S_THING_START:
+		struct i2s_thing_init __user *init = (struct i2s_thing_init __user *)arg;
+		return i2s_thing_start(init->buffer_size);
+
+	default:
+		return -EINVAL;
+	}
+
 	return 0;
 }
 
