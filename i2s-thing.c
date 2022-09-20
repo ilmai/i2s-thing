@@ -322,6 +322,7 @@ static int i2s_thing_open(struct inode *inode, struct file *file)
 	ret = evl_open_file(&efile, file);
 	if (ret)
 	{
+		printk(KERN_ALERT "evl_open_file failed");
 		return ret;
 	}
 
@@ -344,13 +345,13 @@ static ssize_t i2s_thing_read(struct file *file, char __user *buf, size_t size)
 {
 	unsigned long error_count;
 
-	if (size > tx_buffer.size)
+	if (size > rx_buffer.size)
 	{
-		printk(KERN_ALERT "Read size %lu larger than buffer size %lu", size, tx_buffer.size);
+		printk(KERN_ALERT "Read size %lu larger than buffer size %lu", size, rx_buffer.size);
 		return -EINVAL;
 	}
 
-	error_count = copy_to_user(buf, tx_buffer.ptr, size);
+	error_count = raw_copy_to_user(buf, rx_buffer.ptr, size);
 	if (error_count != 0)
 	{
 		printk(KERN_ALERT "Reading from buffer failed");
@@ -370,7 +371,7 @@ static ssize_t i2s_thing_write(struct file *file, const char __user *buf, size_t
 		return -EINVAL;
 	}
 
-	error_count = copy_from_user(tx_buffer.ptr, buf, size);
+	error_count = raw_copy_from_user(tx_buffer.ptr, buf, size);
 	if (error_count != 0)
 	{
 		printk(KERN_ALERT "Writing to buffer failed");
@@ -385,15 +386,24 @@ static int i2s_thing_start(unsigned int buffer_size)
 	int ret;
 	unsigned int bits;
 	size_t i;
-	unsigned int buffer_size_bytes;
+	size_t buffer_size_bytes;
 
 	buffer_size_bytes = buffer_size * sizeof(s16);
 
 	// Allocate DMA buffers
 	ret = alloc_dma_buffer(&tx_buffer, buffer_size_bytes);
-	if (ret) { return ret; }
+	if (ret)
+	{
+		printk(KERN_ALERT "Failed allocating DMA buffer");
+		return ret;
+	}
+	
 	ret = alloc_dma_buffer(&rx_buffer, buffer_size_bytes);
-	if (ret) { return ret; }
+	if (ret)
+	{
+		printk(KERN_ALERT "Failed allocating DMA buffer");
+		return ret;
+	}
 
 	// Write a test pattern to tx buffer
 	for (i = 0; i < buffer_size; ++i)
