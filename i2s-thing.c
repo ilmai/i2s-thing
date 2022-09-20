@@ -342,11 +342,41 @@ static int i2s_thing_release(struct inode *inode, struct file *file)
 
 static ssize_t i2s_thing_read(struct file *file, char __user *buf, size_t size)
 {
+	unsigned long error_count;
+
+	if (size > tx_buffer.size)
+	{
+		printk(KERN_ALERT "Read size %lu larger than buffer size %lu", size, tx_buffer.size);
+		return -EINVAL;
+	}
+
+	error_count = copy_to_user(buf, tx_buffer.ptr, size);
+	if (error_count != 0)
+	{
+		printk(KERN_ALERT "Reading from buffer failed");
+		return -EFAULT;
+	}
+
 	return 0;
 }
 
 static ssize_t i2s_thing_write(struct file *file, const char __user *buf, size_t size)
 {
+	unsigned long error_count;
+
+	if (size > tx_buffer.size)
+	{
+		printk(KERN_ALERT "Write size %lu larger than buffer size %lu", size, tx_buffer.size);
+		return -EINVAL;
+	}
+
+	error_count = copy_from_user(tx_buffer.ptr, buf, size);
+	if (error_count != 0)
+	{
+		printk(KERN_ALERT "Writing to buffer failed");
+		return -EFAULT;
+	}
+
 	return 0;
 }
 
