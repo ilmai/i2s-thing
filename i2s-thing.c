@@ -357,7 +357,7 @@ static ssize_t i2s_thing_read(struct file *file, char __user *buf, size_t size)
 		return -EFAULT;
 	}
 
-	return 0;
+	return size;
 }
 
 static ssize_t i2s_thing_write(struct file *file, const char __user *buf, size_t size)
@@ -377,7 +377,7 @@ static ssize_t i2s_thing_write(struct file *file, const char __user *buf, size_t
 		return -EFAULT;
 	}
 
-	return 0;
+	return size;
 }
 
 static int i2s_thing_start(unsigned int buffer_size)
