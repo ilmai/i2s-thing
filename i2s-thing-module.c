@@ -5,10 +5,12 @@
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/memory.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
 #include <linux/regmap.h>
 #include <linux/platform_device.h>
+
+#include "dma.h"
 
 #define CHAR_DEVICE_NAME "i2s-thing"
 #define DEVICE_CLASS_NAME "i2s-thing-class"
@@ -60,14 +62,6 @@
 struct i2s_thing_settings
 {
 	unsigned int buffer_size;
-};
-
-struct i2s_thing_dma_buffer
-{
-	size_t size;
-	size_t length;
-	s16* ptr;
-	dma_addr_t dma_address;
 };
 
 // IOCTL
@@ -133,71 +127,12 @@ static const struct regmap_config i2s_thing_regmap_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-static struct dma_slave_config i2s_thing_dma_config =
-{
-	.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
-	.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES,
-	.src_maxburst = 2,
-	.dst_maxburst = 2,
-};
-
 static void dma_tx_complete(void *param)
 {
 }
 
 static void dma_rx_complete(void *param)
 {
-}
-
-static int config_dma_channel(struct device* dev, struct dma_chan** dma_chan, const char* name)
-{
-	*dma_chan = dma_request_chan(dev, name);
-
-	if (IS_ERR(*dma_chan))
-	{
-		dev_err(dev, "DMA TX channel request failed\n");
-		*dma_chan = NULL;
-		return PTR_ERR(*dma_chan);
-	}
-
-	dmaengine_slave_config(*dma_chan, &i2s_thing_dma_config);
-
-	return 0;
-}
-
-static int alloc_dma_buffer(struct i2s_thing_dma_buffer* buffer, unsigned int size)
-{
-	void* buffer_ptr;
-	
-	buffer_ptr = dma_alloc_coherent(i2s_device, PAGE_ALIGN(size), &buffer->dma_address, GFP_KERNEL);
-	if (!buffer_ptr)
-	{
-		return -ENOMEM;
-	}
-
-	buffer->size = size;
-	buffer->length = size / sizeof(s16);
-	buffer->ptr = (s16*)buffer_ptr;
-
-	return 0;
-}
-
-static int start_dma(struct dma_chan *dma_chan, dma_addr_t dma_address, unsigned int buffer_size, enum dma_transfer_direction direction, dma_async_tx_callback callback)
-{
-	struct dma_async_tx_descriptor *desc;
-
-	desc = dmaengine_prep_dma_cyclic(dma_chan, dma_address, buffer_size, buffer_size / 2, direction, DMA_OOB_INTERRUPT);
-	if (!desc)
-	{
-		return -EBUSY;
-	}
-
-	desc->callback = callback;
-
-	dmaengine_submit(desc);
-	dma_async_issue_pending(dma_chan);
-
-	return 0;
 }
 
 static int __init i2s_thing_init(void)
@@ -250,6 +185,9 @@ static int __init i2s_thing_init(void)
 
 static void __exit i2s_thing_exit(void)
 {
+	i2s_thing_dma_release(i2s_device, &tx_buffer);
+	i2s_thing_dma_release(i2s_device, &rx_buffer);
+
 	driver_unregister(&i2s_thing_driver.driver);
 	device_destroy(device_class, MKDEV(major_number, 0));
 	unregister_chrdev(major_number, CHAR_DEVICE_NAME);
@@ -259,8 +197,6 @@ static void __exit i2s_thing_exit(void)
 static int i2s_thing_probe(struct platform_device *pdev)
 {
 	void __iomem *register_address;
-	const __be32 *dma_address_be32;
-	dma_addr_t dma_address;
 
 	// Register map
 	register_address = devm_platform_ioremap_resource(pdev, 0);
@@ -275,20 +211,8 @@ static int i2s_thing_probe(struct platform_device *pdev)
 		return PTR_ERR(regmap);
 	}
 
-	// DMA
-	dma_address_be32 = of_get_address(pdev->dev.of_node, 0, NULL, NULL);
-	if (!dma_address_be32)
-	{
-		dev_err(&pdev->dev, "Error getting DMA address\n");
-		return -EINVAL;
-	}
-	dma_address = be32_to_cpup(dma_address_be32);	
-
-	i2s_thing_dma_config.src_addr = dma_address + FIFO_A;
-	i2s_thing_dma_config.dst_addr = dma_address + FIFO_A;
-
-	config_dma_channel(&pdev->dev, &dma_chan_tx, "tx");
-	config_dma_channel(&pdev->dev, &dma_chan_rx, "rx");
+	i2s_thing_dma_create_channel(&pdev->dev, &dma_chan_tx, "tx", FIFO_A);
+	i2s_thing_dma_create_channel(&pdev->dev, &dma_chan_rx, "rx", FIFO_A);
 
 	i2s_device = &pdev->dev;
 
@@ -297,14 +221,10 @@ static int i2s_thing_probe(struct platform_device *pdev)
 
 static int i2s_thing_remove(struct platform_device *pdev)
 {
-	dma_free_coherent(i2s_device, tx_buffer.size, tx_buffer.ptr, tx_buffer.dma_address);
-	dma_free_coherent(i2s_device, rx_buffer.size, rx_buffer.ptr, rx_buffer.dma_address);
-
-    dmaengine_terminate_sync(dma_chan_tx);
-	dma_release_channel(dma_chan_tx);
-
-    dmaengine_terminate_sync(dma_chan_rx);
-	dma_release_channel(dma_chan_rx);
+	i2s_thing_dma_release(i2s_device, &tx_buffer);
+	i2s_thing_dma_release(i2s_device, &rx_buffer);
+	i2s_thing_dma_close_channel(dma_chan_tx);
+	i2s_thing_dma_close_channel(dma_chan_rx);
 
 	return 0;
 }
@@ -312,17 +232,29 @@ static int i2s_thing_remove(struct platform_device *pdev)
 static int i2s_thing_open(struct inode *inode, struct file *file)
 {
 	int ret;
-
+	
 	// Only allow one access at a time
 	if (char_device_opened)
 	{
 		return -EBUSY;
 	}
 
+	memset(&tx_buffer, 0, sizeof(tx_buffer));
+	memset(&rx_buffer, 0, sizeof(rx_buffer));
+
 	ret = evl_open_file(&efile, file);
 	if (ret)
 	{
 		printk(KERN_ALERT "evl_open_file failed");
+		return ret;
+	}
+
+	ret = stream_open(inode, file);
+	if (ret)
+	{
+		evl_release_file(&efile);
+
+		printk(KERN_ALERT "stream_open failed");
 		return ret;
 	}
 
@@ -345,9 +277,9 @@ static ssize_t i2s_thing_read(struct file *file, char __user *buf, size_t size)
 {
 	unsigned long error_count;
 
-	if (size > rx_buffer.size)
+	if (size != rx_buffer.size)
 	{
-		printk(KERN_ALERT "Read size %lu larger than buffer size %lu", size, rx_buffer.size);
+		printk(KERN_ALERT "Read size %lu doesn't match buffer size %lu", size, rx_buffer.size);
 		return -EINVAL;
 	}
 
@@ -365,9 +297,9 @@ static ssize_t i2s_thing_write(struct file *file, const char __user *buf, size_t
 {
 	unsigned long error_count;
 
-	if (size > tx_buffer.size)
+	if (size != tx_buffer.size)
 	{
-		printk(KERN_ALERT "Write size %lu larger than buffer size %lu", size, tx_buffer.size);
+		printk(KERN_ALERT "Write size %lu doesn't match buffer size %lu", size, tx_buffer.size);
 		return -EINVAL;
 	}
 
@@ -385,20 +317,19 @@ static int i2s_thing_start(unsigned int buffer_size)
 {
 	int ret;
 	unsigned int bits;
-	size_t i;
 	size_t buffer_size_bytes;
 
 	buffer_size_bytes = buffer_size * sizeof(s16);
 
 	// Allocate DMA buffers
-	ret = alloc_dma_buffer(&tx_buffer, buffer_size_bytes);
+	ret = i2s_thing_dma_alloc(i2s_device, &tx_buffer, buffer_size_bytes);
 	if (ret)
 	{
 		printk(KERN_ALERT "Failed allocating DMA buffer");
 		return ret;
 	}
 	
-	ret = alloc_dma_buffer(&rx_buffer, buffer_size_bytes);
+	ret = i2s_thing_dma_alloc(i2s_device, &rx_buffer, buffer_size_bytes);
 	if (ret)
 	{
 		printk(KERN_ALERT "Failed allocating DMA buffer");
@@ -406,8 +337,8 @@ static int i2s_thing_start(unsigned int buffer_size)
 	}
 
 	// Enable DMA
-	start_dma(dma_chan_tx, tx_buffer.dma_address, buffer_size, DMA_MEM_TO_DEV, dma_tx_complete);
-	start_dma(dma_chan_rx, rx_buffer.dma_address, buffer_size, DMA_DEV_TO_MEM, dma_rx_complete);
+	i2s_thing_dma_start(dma_chan_tx, tx_buffer.dma_address, buffer_size, DMA_MEM_TO_DEV, dma_tx_complete);
+	i2s_thing_dma_start(dma_chan_rx, rx_buffer.dma_address, buffer_size, DMA_DEV_TO_MEM, dma_rx_complete);
 
 	// Enable PCM device and clear standby
 	regmap_write(regmap, CS_A, CS_EN | CS_STBY);
