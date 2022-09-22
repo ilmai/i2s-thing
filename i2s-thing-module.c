@@ -2,6 +2,7 @@
 #include <evl/flag.h>
 #include <linux/module.h>
 
+#include "buffer.h"
 #include "dma.h"
 #include "i2s.h"
 
@@ -11,7 +12,8 @@
 
 struct i2s_thing_settings
 {
-	unsigned int buffer_size;
+	unsigned int period_frames;
+	unsigned int period_count;
 };
 
 // IOCTL
@@ -29,8 +31,8 @@ static struct dma_chan *dma_chan_tx = NULL;
 static struct dma_chan *dma_chan_rx = NULL;
 static struct regmap *regmap = NULL;
 
-static struct i2s_thing_dma_buffer tx_buffer;
-static struct i2s_thing_dma_buffer rx_buffer;
+static struct i2s_thing_buffer tx_buffer;
+static struct i2s_thing_buffer rx_buffer;
 
 static int i2s_thing_probe(struct platform_device *pdev);
 static int i2s_thing_remove(struct platform_device *pdev);
@@ -128,9 +130,6 @@ static int __init i2s_thing_init(void)
 
 static void __exit i2s_thing_exit(void)
 {
-	i2s_thing_dma_release(i2s_device, &tx_buffer);
-	i2s_thing_dma_release(i2s_device, &rx_buffer);
-
 	driver_unregister(&i2s_thing_driver.driver);
 	device_destroy(device_class, MKDEV(major_number, 0));
 	unregister_chrdev(major_number, CHAR_DEVICE_NAME);
@@ -144,8 +143,10 @@ static int i2s_thing_probe(struct platform_device *pdev)
 	ret = i2s_thing_i2s_init_regmap(pdev, &regmap);
 	if (ret) { return ret; }
 
-	i2s_thing_dma_create_channel(&pdev->dev, &dma_chan_tx, "tx", FIFO_A);
-	i2s_thing_dma_create_channel(&pdev->dev, &dma_chan_rx, "rx", FIFO_A);
+	ret = i2s_thing_dma_create_channel(&pdev->dev, &dma_chan_tx, "tx", FIFO_A);
+	if (ret) { return ret; }
+	ret = i2s_thing_dma_create_channel(&pdev->dev, &dma_chan_rx, "rx", FIFO_A);
+	if (ret) { return ret; }
 
 	i2s_device = &pdev->dev;
 
@@ -154,13 +155,13 @@ static int i2s_thing_probe(struct platform_device *pdev)
 
 static int i2s_thing_remove(struct platform_device *pdev)
 {
-	i2s_thing_dma_release(i2s_device, &tx_buffer);
-	i2s_thing_dma_release(i2s_device, &rx_buffer);
 	i2s_thing_dma_close_channel(dma_chan_tx);
 	i2s_thing_dma_close_channel(dma_chan_rx);
 
 	memset(&tx_buffer, 0, sizeof(tx_buffer));
 	memset(&rx_buffer, 0, sizeof(rx_buffer));
+
+	regmap = NULL;
 	dma_chan_tx = NULL;
 	dma_chan_rx = NULL;
 
@@ -202,6 +203,9 @@ static int i2s_thing_release(struct inode *inode, struct file *file)
 {
 	i2s_thing_i2s_stop(regmap);
 
+	i2s_thing_buffer_release(i2s_device, &tx_buffer);
+	i2s_thing_buffer_release(i2s_device, &rx_buffer);
+
 	evl_destroy_flag(&eflag);
 	evl_release_file(&efile);
 
@@ -213,48 +217,17 @@ static int i2s_thing_release(struct inode *inode, struct file *file)
 
 static ssize_t i2s_thing_read(struct file *file, char __user *buf, size_t size)
 {
-	unsigned long error_count;
-
-	if (size != rx_buffer.size)
-	{
-		printk(KERN_ALERT "Read size %lu doesn't match buffer size %lu", size, rx_buffer.size);
-		return -EINVAL;
-	}
-
-	error_count = raw_copy_to_user(buf, rx_buffer.ptr, size);
-	if (error_count != 0)
-	{
-		printk(KERN_ALERT "Reading from buffer failed");
-		return -EFAULT;
-	}
-
-	return size;
+	return i2s_thing_buffer_read(&rx_buffer, buf, size);
 }
 
 static ssize_t i2s_thing_write(struct file *file, const char __user *buf, size_t size)
 {
-	unsigned long error_count;
-
-	if (size != tx_buffer.size)
-	{
-		printk(KERN_ALERT "Write size %lu doesn't match buffer size %lu", size, tx_buffer.size);
-		return -EINVAL;
-	}
-
-	error_count = raw_copy_from_user(tx_buffer.ptr, buf, size);
-	if (error_count != 0)
-	{
-		printk(KERN_ALERT "Writing to buffer failed");
-		return -EFAULT;
-	}
-
-	return size;
+	return i2s_thing_buffer_write(&tx_buffer, buf, size);
 }
 
-static int i2s_thing_start(unsigned int buffer_size)
+static int i2s_thing_start(unsigned int period_frames, unsigned int period_count)
 {
 	int ret;
-	size_t buffer_size_bytes;
 
 	// Don't allow calling multiple times
 	if (tx_buffer.ptr)
@@ -262,27 +235,17 @@ static int i2s_thing_start(unsigned int buffer_size)
 		return -EBUSY;
 	}
 
-	buffer_size_bytes = buffer_size * sizeof(s16);
-
-	// Allocate DMA buffers
-	ret = i2s_thing_dma_alloc(i2s_device, &tx_buffer, buffer_size_bytes);
-	if (ret)
-	{
-		printk(KERN_ALERT "Failed allocating DMA buffer");
-		return ret;
-	}
-	
-	ret = i2s_thing_dma_alloc(i2s_device, &rx_buffer, buffer_size_bytes);
-	if (ret)
-	{
-		printk(KERN_ALERT "Failed allocating DMA buffer");
-		return ret;
-	}
+	// Init buffers
+	ret = i2s_thing_buffer_init(i2s_device, &tx_buffer, period_frames, period_count);
+	if (ret) { return ret; }
+	ret = i2s_thing_buffer_init(i2s_device, &rx_buffer, period_frames, period_count);
+	if (ret) { return ret; }
 
 	// Enable DMA
-	i2s_thing_dma_start(dma_chan_tx, tx_buffer.dma_address, buffer_size, DMA_MEM_TO_DEV, dma_tx_complete);
-	i2s_thing_dma_start(dma_chan_rx, rx_buffer.dma_address, buffer_size, DMA_DEV_TO_MEM, dma_rx_complete);
+	i2s_thing_dma_start(dma_chan_tx, tx_buffer.dma_address, tx_buffer.size, tx_buffer.period_size, DMA_MEM_TO_DEV, dma_tx_complete);
+	i2s_thing_dma_start(dma_chan_rx, rx_buffer.dma_address, rx_buffer.size, rx_buffer.period_size, DMA_DEV_TO_MEM, dma_rx_complete);
 
+	// Start I2S
 	i2s_thing_i2s_start(regmap);
 
 	return 0;
@@ -294,7 +257,7 @@ static long i2s_thing_ioctl(struct file *file, unsigned int cmd, unsigned long a
 	{
 	case I2S_THING_START:
 		struct i2s_thing_settings __user *settings = (struct i2s_thing_settings __user *)arg;
-		return i2s_thing_start(settings->buffer_size);
+		return i2s_thing_start(settings->period_frames, settings->period_count);
 
 	default:
 		return -EINVAL;
