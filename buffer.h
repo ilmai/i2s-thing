@@ -6,7 +6,7 @@
 
 struct i2st_buffer
 {
-	void* ptr;
+	char* ptr;
 	dma_addr_t dma_address;
 
 	size_t size;
