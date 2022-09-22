@@ -250,8 +250,10 @@ static int i2st_start(unsigned int period_frames, unsigned int period_count)
 	if (ret) { return ret; }
 
 	// Enable DMA
-	i2st_dma_start(dma_chan_tx, tx_buffer.dma_address, tx_buffer.size, tx_buffer.period_size, DMA_MEM_TO_DEV, dma_tx_complete);
-	i2st_dma_start(dma_chan_rx, rx_buffer.dma_address, rx_buffer.size, rx_buffer.period_size, DMA_DEV_TO_MEM, dma_rx_complete);
+	ret = i2st_dma_start(dma_chan_tx, tx_buffer.dma_address, tx_buffer.size, tx_buffer.period_size, DMA_MEM_TO_DEV, dma_tx_complete);
+	if (ret) { return ret; }
+	ret = i2st_dma_start(dma_chan_rx, rx_buffer.dma_address, rx_buffer.size, rx_buffer.period_size, DMA_DEV_TO_MEM, dma_rx_complete);
+	if (ret) { return ret; }
 
 	// Start I2S
 	i2st_i2s_start(regmap);
