@@ -7,57 +7,14 @@
 #include <linux/interrupt.h>
 #include <linux/memory.h>
 #include <linux/module.h>
-#include <linux/regmap.h>
 #include <linux/platform_device.h>
 
 #include "dma.h"
+#include "i2s.h"
 
 #define CHAR_DEVICE_NAME "i2s-thing"
 #define DEVICE_CLASS_NAME "i2s-thing-class"
 #define DRIVER_NAME "i2s-thing-io"
-
-// Registers
-#define CS_A		0x00
-#define FIFO_A		0x04
-#define MODE_A		0x08
-#define RXC_A		0x0c
-#define TXC_A		0x10
-#define DREQ_A		0x14
-#define INTEN_A		0x18
-#define INTSTC_A	0x1c
-#define GRAY		0x20
-
-// Register fields
-#define CS_EN		BIT(0)
-#define CS_RXON		BIT(1)
-#define CS_TXON		BIT(2)
-#define CS_TXCLR	BIT(3)
-#define CS_RXCLR	BIT(4)
-#define CS_DMAEN	BIT(9)
-#define CS_STBY		BIT(25)
-
-#define MODE_FSLEN(val)	(val)
-#define MODE_FLEN(val)	((val - 1) << 10)
-#define MODE_FSI		BIT(20)
-#define MODE_FSM		BIT(21)
-#define MODE_CLKI		BIT(22)
-#define MODE_CLKM		BIT(23)
-#define MODE_FTXP		BIT(24)
-#define MODE_FRXP		BIT(25)
-
-#define XC_CH2WID(val)	(val)
-#define XC_CH2POS(val)	(val << 4)
-#define XC_CH2EN		BIT(14)
-#define XC_CH2WEX		BIT(15)
-#define XC_CH1WID(val)	(val << 16)
-#define XC_CH1POS(val)	(val << 20)
-#define XC_CH1EN		BIT(30)
-#define XC_CH1WEX		BIT(31)
-
-#define DREQ_RX_REQ(val)	(val)
-#define DREQ_TX_REQ(val)	(val << 8)
-#define DREQ_RX_PANIC(val)	(val << 16)
-#define DREQ_TX_PANIC(val)	(val << 24)
 
 struct i2s_thing_settings
 {
@@ -103,11 +60,8 @@ static struct file_operations i2s_thing_fops =
 };
 
 static const struct of_device_id i2s_thing_of_match[] = {
-	{
-		.compatible = "brcm,bcm2835-i2s",
-	},
-	{		
-	},
+	{ .compatible = "brcm,bcm2835-i2s", },
+	{ },
 };
 
 static struct platform_driver i2s_thing_driver = {
@@ -117,14 +71,6 @@ static struct platform_driver i2s_thing_driver = {
 		.name = DRIVER_NAME,
 		.of_match_table = i2s_thing_of_match,
 	},
-};
-
-static const struct regmap_config i2s_thing_regmap_config = {
-	.reg_bits = 32,
-	.reg_stride = 4,
-	.val_bits = 32,
-	.max_register = GRAY,
-	.cache_type = REGCACHE_NONE,
 };
 
 static void dma_tx_complete(void *param)
@@ -196,20 +142,10 @@ static void __exit i2s_thing_exit(void)
 
 static int i2s_thing_probe(struct platform_device *pdev)
 {
-	void __iomem *register_address;
+	int ret;
 
-	// Register map
-	register_address = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(register_address))
-	{
-		return PTR_ERR(register_address);
-	}
-
-	regmap = devm_regmap_init_mmio(&pdev->dev, register_address, &i2s_thing_regmap_config);
-	if (IS_ERR(regmap))
-	{
-		return PTR_ERR(regmap);
-	}
+	ret = i2s_thing_i2s_init_regmap(pdev, &regmap);
+	if (ret) { return ret; }
 
 	i2s_thing_dma_create_channel(&pdev->dev, &dma_chan_tx, "tx", FIFO_A);
 	i2s_thing_dma_create_channel(&pdev->dev, &dma_chan_rx, "rx", FIFO_A);
@@ -266,6 +202,8 @@ static int i2s_thing_open(struct inode *inode, struct file *file)
 
 static int i2s_thing_release(struct inode *inode, struct file *file)
 {
+	i2s_thing_i2s_stop(regmap);
+
 	evl_destroy_flag(&eflag);
 	evl_release_file(&efile);
 
@@ -316,7 +254,6 @@ static ssize_t i2s_thing_write(struct file *file, const char __user *buf, size_t
 static int i2s_thing_start(unsigned int buffer_size)
 {
 	int ret;
-	unsigned int bits;
 	size_t buffer_size_bytes;
 
 	buffer_size_bytes = buffer_size * sizeof(s16);
@@ -340,26 +277,7 @@ static int i2s_thing_start(unsigned int buffer_size)
 	i2s_thing_dma_start(dma_chan_tx, tx_buffer.dma_address, buffer_size, DMA_MEM_TO_DEV, dma_tx_complete);
 	i2s_thing_dma_start(dma_chan_rx, rx_buffer.dma_address, buffer_size, DMA_DEV_TO_MEM, dma_rx_complete);
 
-	// Enable PCM device and clear standby
-	regmap_write(regmap, CS_A, CS_EN | CS_STBY);
-
-	// Change settings
-	regmap_write(regmap, MODE_A, MODE_FSM | MODE_CLKM | MODE_FSI | MODE_CLKI | MODE_FTXP | MODE_FRXP | MODE_FLEN(64));
-
-	bits = XC_CH1EN | XC_CH1POS(1) | XC_CH1WID(16) | XC_CH2EN | XC_CH2POS(33) | XC_CH2WID(16);
-	regmap_write(regmap, TXC_A, bits);
-	regmap_write(regmap, RXC_A, bits);
-
-	// Clear FIFO
-	bits = CS_RXCLR | CS_TXCLR;
-	regmap_update_bits(regmap, CS_A, bits, bits);
-
-	// Set up DREQ
-	regmap_write(regmap, DREQ_A, DREQ_TX_REQ(0x30) | DREQ_TX_PANIC(0x10) | DREQ_RX_REQ(0x20) | DREQ_RX_PANIC(0x30));
-
-	// Enable transmission
-	bits = CS_DMAEN | CS_TXON | CS_RXON;
-	regmap_update_bits(regmap, CS_A, bits, bits);
+	i2s_thing_i2s_start(regmap);
 
 	return 0;
 }

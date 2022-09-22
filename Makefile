@@ -1,5 +1,5 @@
 obj-m += i2s-thing.o
-i2s-thing-y += i2s-thing-module.o dma.o
+i2s-thing-y += i2s-thing-module.o dma.o i2s.o
 
 all: modules
 
