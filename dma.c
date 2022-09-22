@@ -71,7 +71,6 @@ void i2st_dma_release(struct device* dev, size_t size, void* ptr, dma_addr_t dma
 
 void i2st_dma_close_channel(struct dma_chan* channel)
 {
-    dmaengine_terminate_sync(channel);
 	dma_release_channel(channel);
 }
 
@@ -91,4 +90,9 @@ int i2st_dma_start(struct dma_chan *dma_chan, dma_addr_t dma_address, unsigned i
 	dma_async_issue_pending(dma_chan);
 
 	return 0;
+}
+
+int i2st_dma_stop(struct dma_chan *dma_chan)
+{
+	return dmaengine_terminate_sync(dma_chan);
 }

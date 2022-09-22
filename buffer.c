@@ -100,10 +100,21 @@ void i2st_buffer_dma_complete(struct i2st_buffer* buffer)
 
 size_t i2st_buffer_available(struct i2st_buffer* buffer)
 {
-    if (buffer->dma_offset >= buffer->user_offset)
+	unsigned long flags;
+    size_t dma_offset;
+    size_t user_offset;
+	size_t buffer_size;
+
+	local_irq_save(flags);
+	buffer_size = buffer->size;
+	dma_offset = buffer->dma_offset;
+	user_offset = buffer->user_offset;
+	local_irq_restore(flags);
+
+    if (dma_offset >= user_offset)
     {
-        return buffer->dma_offset - buffer->user_offset;
+        return dma_offset - user_offset;
     }
 
-    return buffer->size - buffer->user_offset + buffer->dma_offset;
+    return buffer_size - user_offset + dma_offset;
 }

@@ -203,13 +203,19 @@ static int i2st_open(struct inode *inode, struct file *file)
 
 static int i2st_release(struct inode *inode, struct file *file)
 {
+	i2st_dma_stop(dma_chan_tx);
+	i2st_dma_stop(dma_chan_rx);
+
 	i2st_i2s_stop(regmap);
 
 	i2st_buffer_release(i2s_device, &tx_buffer);
 	i2st_buffer_release(i2s_device, &rx_buffer);
 
-	evl_destroy_flag(&eflag);
-	evl_release_file(&efile);
+	if (efile.filp)
+	{
+		evl_destroy_flag(&eflag);
+		evl_release_file(&efile);
+	}
 
 	memset(&efile, 0, sizeof(efile));
 	memset(&eflag, 0, sizeof(eflag));
