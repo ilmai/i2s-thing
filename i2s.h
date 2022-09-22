@@ -47,7 +47,7 @@
 #define DREQ_RX_PANIC(val)	(val << 16)
 #define DREQ_TX_PANIC(val)	(val << 24)
 
-static const struct regmap_config i2s_thing_regmap_config = {
+static const struct regmap_config i2st_regmap_config = {
 	.reg_bits = 32,
 	.reg_stride = 4,
 	.val_bits = 32,
@@ -55,8 +55,8 @@ static const struct regmap_config i2s_thing_regmap_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-int i2s_thing_i2s_init_regmap(struct platform_device *pdev, struct regmap** regmap);
-void i2s_thing_i2s_start(struct regmap* regmap);
-void i2s_thing_i2s_stop(struct regmap* regmap);
+int i2st_i2s_init_regmap(struct platform_device *pdev, struct regmap** regmap);
+void i2st_i2s_start(struct regmap* regmap);
+void i2st_i2s_stop(struct regmap* regmap);
 
 #endif

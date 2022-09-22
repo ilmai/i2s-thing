@@ -10,7 +10,7 @@
 #define DEVICE_CLASS_NAME "i2s-thing-class"
 #define DRIVER_NAME "i2s-thing-io"
 
-struct i2s_thing_settings
+struct i2st_settings
 {
 	unsigned int period_frames;
 	unsigned int period_count;
@@ -18,7 +18,7 @@ struct i2s_thing_settings
 
 // IOCTL
 #define I2S_THING_IOCTL	0x10
-#define I2S_THING_START _IOW(I2S_THING_IOCTL, 0x01, struct i2s_thing_settings)
+#define I2S_THING_START _IOW(I2S_THING_IOCTL, 0x01, struct i2st_settings)
 
 static int major_number = 0;
 static struct class *device_class = NULL;
@@ -31,51 +31,53 @@ static struct dma_chan *dma_chan_tx = NULL;
 static struct dma_chan *dma_chan_rx = NULL;
 static struct regmap *regmap = NULL;
 
-static struct i2s_thing_buffer tx_buffer;
-static struct i2s_thing_buffer rx_buffer;
+static struct i2st_buffer tx_buffer;
+static struct i2st_buffer rx_buffer;
 
-static int i2s_thing_probe(struct platform_device *pdev);
-static int i2s_thing_remove(struct platform_device *pdev);
+static int i2st_probe(struct platform_device *pdev);
+static int i2st_remove(struct platform_device *pdev);
 
-static int i2s_thing_open(struct inode *inode, struct file *file);
-static int i2s_thing_release(struct inode *inode, struct file *file);
-static ssize_t i2s_thing_read(struct file *file, char __user *buf, size_t size);
-static ssize_t i2s_thing_write(struct file *file, const char __user *buf, size_t size);
-static long i2s_thing_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+static int i2st_open(struct inode *inode, struct file *file);
+static int i2st_release(struct inode *inode, struct file *file);
+static ssize_t i2st_read(struct file *file, char __user *buf, size_t size);
+static ssize_t i2st_write(struct file *file, const char __user *buf, size_t size);
+static long i2st_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 
-static struct file_operations i2s_thing_fops =
+static struct file_operations i2st_fops =
 {
 	.owner = THIS_MODULE,
-	.open = i2s_thing_open,
-	.release = i2s_thing_release,
-	.oob_read = i2s_thing_read,
-	.oob_write = i2s_thing_write,
-	.unlocked_ioctl = i2s_thing_ioctl,
+	.open = i2st_open,
+	.release = i2st_release,
+	.oob_read = i2st_read,
+	.oob_write = i2st_write,
+	.unlocked_ioctl = i2st_ioctl,
 };
 
-static const struct of_device_id i2s_thing_of_match[] = {
+static const struct of_device_id i2st_of_match[] = {
 	{ .compatible = "brcm,bcm2835-i2s", },
 	{ },
 };
 
-static struct platform_driver i2s_thing_driver = {
-	.probe = i2s_thing_probe,
-	.remove = i2s_thing_remove,
+static struct platform_driver i2st_driver = {
+	.probe = i2st_probe,
+	.remove = i2st_remove,
 	.driver = {
 		.name = DRIVER_NAME,
-		.of_match_table = i2s_thing_of_match,
+		.of_match_table = i2st_of_match,
 	},
 };
 
 static void dma_tx_complete(void *param)
 {
+	i2st_buffer_dma_complete(&tx_buffer);
 }
 
 static void dma_rx_complete(void *param)
 {
+	i2st_buffer_dma_complete(&rx_buffer);
 }
 
-static int __init i2s_thing_init(void)
+static int __init i2st_init(void)
 {
 	int ret;
 
@@ -85,7 +87,7 @@ static int __init i2s_thing_init(void)
 	memset(&rx_buffer, 0, sizeof(rx_buffer));
 
 	// Create character device
-	major_number = register_chrdev(0, CHAR_DEVICE_NAME, &i2s_thing_fops);
+	major_number = register_chrdev(0, CHAR_DEVICE_NAME, &i2st_fops);
 	if (major_number < 0)
 	{
 		printk(KERN_ALERT "Failed to register major number\n");
@@ -110,10 +112,10 @@ static int __init i2s_thing_init(void)
 	}
 
 	// Create I2S driver
-	i2s_thing_driver.driver.owner = THIS_MODULE;
-	i2s_thing_driver.driver.bus = &platform_bus_type;
+	i2st_driver.driver.owner = THIS_MODULE;
+	i2st_driver.driver.bus = &platform_bus_type;
 
-	ret = driver_register(&i2s_thing_driver.driver);
+	ret = driver_register(&i2st_driver.driver);
 	if (ret)
 	{
 		device_destroy(device_class, MKDEV(major_number, 0));
@@ -128,24 +130,24 @@ static int __init i2s_thing_init(void)
 	return 0;
 }
 
-static void __exit i2s_thing_exit(void)
+static void __exit i2st_exit(void)
 {
-	driver_unregister(&i2s_thing_driver.driver);
+	driver_unregister(&i2st_driver.driver);
 	device_destroy(device_class, MKDEV(major_number, 0));
 	unregister_chrdev(major_number, CHAR_DEVICE_NAME);
 	class_destroy(device_class);
 }
 
-static int i2s_thing_probe(struct platform_device *pdev)
+static int i2st_probe(struct platform_device *pdev)
 {
 	int ret;
 
-	ret = i2s_thing_i2s_init_regmap(pdev, &regmap);
+	ret = i2st_i2s_init_regmap(pdev, &regmap);
 	if (ret) { return ret; }
 
-	ret = i2s_thing_dma_create_channel(&pdev->dev, &dma_chan_tx, "tx", FIFO_A);
+	ret = i2st_dma_create_channel(&pdev->dev, &dma_chan_tx, "tx", FIFO_A);
 	if (ret) { return ret; }
-	ret = i2s_thing_dma_create_channel(&pdev->dev, &dma_chan_rx, "rx", FIFO_A);
+	ret = i2st_dma_create_channel(&pdev->dev, &dma_chan_rx, "rx", FIFO_A);
 	if (ret) { return ret; }
 
 	i2s_device = &pdev->dev;
@@ -153,10 +155,10 @@ static int i2s_thing_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int i2s_thing_remove(struct platform_device *pdev)
+static int i2st_remove(struct platform_device *pdev)
 {
-	i2s_thing_dma_close_channel(dma_chan_tx);
-	i2s_thing_dma_close_channel(dma_chan_rx);
+	i2st_dma_close_channel(dma_chan_tx);
+	i2st_dma_close_channel(dma_chan_rx);
 
 	memset(&tx_buffer, 0, sizeof(tx_buffer));
 	memset(&rx_buffer, 0, sizeof(rx_buffer));
@@ -168,7 +170,7 @@ static int i2s_thing_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int i2s_thing_open(struct inode *inode, struct file *file)
+static int i2st_open(struct inode *inode, struct file *file)
 {
 	int ret;
 	
@@ -199,12 +201,12 @@ static int i2s_thing_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static int i2s_thing_release(struct inode *inode, struct file *file)
+static int i2st_release(struct inode *inode, struct file *file)
 {
-	i2s_thing_i2s_stop(regmap);
+	i2st_i2s_stop(regmap);
 
-	i2s_thing_buffer_release(i2s_device, &tx_buffer);
-	i2s_thing_buffer_release(i2s_device, &rx_buffer);
+	i2st_buffer_release(i2s_device, &tx_buffer);
+	i2st_buffer_release(i2s_device, &rx_buffer);
 
 	evl_destroy_flag(&eflag);
 	evl_release_file(&efile);
@@ -215,17 +217,17 @@ static int i2s_thing_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static ssize_t i2s_thing_read(struct file *file, char __user *buf, size_t size)
+static ssize_t i2st_read(struct file *file, char __user *buf, size_t size)
 {
-	return i2s_thing_buffer_read(&rx_buffer, buf, size);
+	return i2st_buffer_read(&rx_buffer, buf, size);
 }
 
-static ssize_t i2s_thing_write(struct file *file, const char __user *buf, size_t size)
+static ssize_t i2st_write(struct file *file, const char __user *buf, size_t size)
 {
-	return i2s_thing_buffer_write(&tx_buffer, buf, size);
+	return i2st_buffer_write(&tx_buffer, buf, size);
 }
 
-static int i2s_thing_start(unsigned int period_frames, unsigned int period_count)
+static int i2st_start(unsigned int period_frames, unsigned int period_count)
 {
 	int ret;
 
@@ -236,28 +238,28 @@ static int i2s_thing_start(unsigned int period_frames, unsigned int period_count
 	}
 
 	// Init buffers
-	ret = i2s_thing_buffer_init(i2s_device, &tx_buffer, period_frames, period_count);
+	ret = i2st_buffer_init(i2s_device, &tx_buffer, period_frames, period_count);
 	if (ret) { return ret; }
-	ret = i2s_thing_buffer_init(i2s_device, &rx_buffer, period_frames, period_count);
+	ret = i2st_buffer_init(i2s_device, &rx_buffer, period_frames, period_count);
 	if (ret) { return ret; }
 
 	// Enable DMA
-	i2s_thing_dma_start(dma_chan_tx, tx_buffer.dma_address, tx_buffer.size, tx_buffer.period_size, DMA_MEM_TO_DEV, dma_tx_complete);
-	i2s_thing_dma_start(dma_chan_rx, rx_buffer.dma_address, rx_buffer.size, rx_buffer.period_size, DMA_DEV_TO_MEM, dma_rx_complete);
+	i2st_dma_start(dma_chan_tx, tx_buffer.dma_address, tx_buffer.size, tx_buffer.period_size, DMA_MEM_TO_DEV, dma_tx_complete);
+	i2st_dma_start(dma_chan_rx, rx_buffer.dma_address, rx_buffer.size, rx_buffer.period_size, DMA_DEV_TO_MEM, dma_rx_complete);
 
 	// Start I2S
-	i2s_thing_i2s_start(regmap);
+	i2st_i2s_start(regmap);
 
 	return 0;
 }
 
-static long i2s_thing_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+static long i2st_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	switch (cmd)
 	{
 	case I2S_THING_START:
-		struct i2s_thing_settings __user *settings = (struct i2s_thing_settings __user *)arg;
-		return i2s_thing_start(settings->period_frames, settings->period_count);
+		struct i2st_settings __user *settings = (struct i2st_settings __user *)arg;
+		return i2st_start(settings->period_frames, settings->period_count);
 
 	default:
 		return -EINVAL;
@@ -266,10 +268,10 @@ static long i2s_thing_ioctl(struct file *file, unsigned int cmd, unsigned long a
 	return 0;
 }
 
-module_init(i2s_thing_init);
-module_exit(i2s_thing_exit);
+module_init(i2st_init);
+module_exit(i2st_exit);
 
-MODULE_DEVICE_TABLE(of, i2s_thing_of_match);
+MODULE_DEVICE_TABLE(of, i2st_of_match);
 
 MODULE_ALIAS("platform:i2s-thing");
 MODULE_DESCRIPTION("I2S driver thing");

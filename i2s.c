@@ -3,7 +3,7 @@
 #include <linux/memory.h>
 #include <linux/platform_device.h>
 
-int i2s_thing_i2s_init_regmap(struct platform_device *pdev, struct regmap** regmap)
+int i2st_i2s_init_regmap(struct platform_device *pdev, struct regmap** regmap)
 {
 	void __iomem *register_address;
 
@@ -13,7 +13,7 @@ int i2s_thing_i2s_init_regmap(struct platform_device *pdev, struct regmap** regm
 		return PTR_ERR(register_address);
 	}
 
-	*regmap = devm_regmap_init_mmio(&pdev->dev, register_address, &i2s_thing_regmap_config);
+	*regmap = devm_regmap_init_mmio(&pdev->dev, register_address, &i2st_regmap_config);
 	if (IS_ERR(*regmap))
 	{
 		return PTR_ERR(*regmap);
@@ -22,7 +22,7 @@ int i2s_thing_i2s_init_regmap(struct platform_device *pdev, struct regmap** regm
     return 0;
 }
 
-void i2s_thing_i2s_start(struct regmap* regmap)
+void i2st_i2s_start(struct regmap* regmap)
 {
     unsigned int bits;
 
@@ -48,7 +48,7 @@ void i2s_thing_i2s_start(struct regmap* regmap)
 	regmap_update_bits(regmap, CS_A, bits, bits);
 }
 
-void i2s_thing_i2s_stop(struct regmap* regmap)
+void i2st_i2s_stop(struct regmap* regmap)
 {
 	regmap_write(regmap, CS_A, 0);
 }
