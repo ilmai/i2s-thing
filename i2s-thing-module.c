@@ -18,20 +18,19 @@ struct i2s_thing_settings
 #define I2S_THING_IOCTL	0x10
 #define I2S_THING_START _IOW(I2S_THING_IOCTL, 0x01, struct i2s_thing_settings)
 
-static int major_number;
+static int major_number = 0;
 static struct class *device_class = NULL;
 static struct device *char_device = NULL;
 static struct device *i2s_device = NULL;
 static struct evl_file efile;
 static struct evl_flag eflag;
-static bool char_device_opened = false;
 
-struct dma_chan *dma_chan_tx;
-struct dma_chan *dma_chan_rx;
-struct regmap	*regmap;
+static struct dma_chan *dma_chan_tx = NULL;
+static struct dma_chan *dma_chan_rx = NULL;
+static struct regmap *regmap = NULL;
 
-struct i2s_thing_dma_buffer tx_buffer;
-struct i2s_thing_dma_buffer rx_buffer;
+static struct i2s_thing_dma_buffer tx_buffer;
+static struct i2s_thing_dma_buffer rx_buffer;
 
 static int i2s_thing_probe(struct platform_device *pdev);
 static int i2s_thing_remove(struct platform_device *pdev);
@@ -77,6 +76,11 @@ static void dma_rx_complete(void *param)
 static int __init i2s_thing_init(void)
 {
 	int ret;
+
+	memset(&efile, 0, sizeof(efile));
+	memset(&eflag, 0, sizeof(eflag));
+	memset(&tx_buffer, 0, sizeof(tx_buffer));
+	memset(&rx_buffer, 0, sizeof(rx_buffer));
 
 	// Create character device
 	major_number = register_chrdev(0, CHAR_DEVICE_NAME, &i2s_thing_fops);
@@ -155,6 +159,11 @@ static int i2s_thing_remove(struct platform_device *pdev)
 	i2s_thing_dma_close_channel(dma_chan_tx);
 	i2s_thing_dma_close_channel(dma_chan_rx);
 
+	memset(&tx_buffer, 0, sizeof(tx_buffer));
+	memset(&rx_buffer, 0, sizeof(rx_buffer));
+	dma_chan_tx = NULL;
+	dma_chan_rx = NULL;
+
 	return 0;
 }
 
@@ -163,13 +172,10 @@ static int i2s_thing_open(struct inode *inode, struct file *file)
 	int ret;
 	
 	// Only allow one access at a time
-	if (char_device_opened)
+	if (efile.filp)
 	{
 		return -EBUSY;
 	}
-
-	memset(&tx_buffer, 0, sizeof(tx_buffer));
-	memset(&rx_buffer, 0, sizeof(rx_buffer));
 
 	ret = evl_open_file(&efile, file);
 	if (ret)
@@ -189,7 +195,6 @@ static int i2s_thing_open(struct inode *inode, struct file *file)
 
 	evl_init_flag(&eflag);
 
-	char_device_opened = true;
 	return 0;
 }
 
@@ -200,7 +205,9 @@ static int i2s_thing_release(struct inode *inode, struct file *file)
 	evl_destroy_flag(&eflag);
 	evl_release_file(&efile);
 
-	char_device_opened = false;
+	memset(&efile, 0, sizeof(efile));
+	memset(&eflag, 0, sizeof(eflag));
+
 	return 0;
 }
 
@@ -248,6 +255,12 @@ static int i2s_thing_start(unsigned int buffer_size)
 {
 	int ret;
 	size_t buffer_size_bytes;
+
+	// Don't allow calling multiple times
+	if (tx_buffer.ptr)
+	{
+		return -EBUSY;
+	}
 
 	buffer_size_bytes = buffer_size * sizeof(s16);
 
