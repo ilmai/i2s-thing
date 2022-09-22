@@ -1,13 +1,6 @@
 #include <evl/file.h>
 #include <evl/flag.h>
-#include <linux/dmaengine.h>
-#include <linux/dma-mapping.h>
-#include <linux/fs.h>
-#include <linux/init.h>
-#include <linux/interrupt.h>
-#include <linux/memory.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
 
 #include "dma.h"
 #include "i2s.h"
