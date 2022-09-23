@@ -178,7 +178,7 @@ static int i2st_remove(struct platform_device *pdev)
 static int i2st_open(struct inode *inode, struct file *file)
 {
 	int ret;
-	
+
 	// Only allow one access at a time
 	if (efile.filp)
 	{
@@ -208,8 +208,8 @@ static int i2st_open(struct inode *inode, struct file *file)
 
 static int i2st_release(struct inode *inode, struct file *file)
 {
-	i2st_dma_stop(dma_chan_tx);
-	i2st_dma_stop(dma_chan_rx);
+	if (dma_chan_tx) i2st_dma_stop(dma_chan_tx);
+	if (dma_chan_rx) i2st_dma_stop(dma_chan_rx);
 
 	i2st_stop();
 
@@ -252,13 +252,29 @@ static int i2st_start(unsigned int period_frames, unsigned int period_count)
 	ret = i2st_buffer_init(i2s_device, &tx_buffer, period_frames, period_count);
 	if (ret) { return ret; }
 	ret = i2st_buffer_init(i2s_device, &rx_buffer, period_frames, period_count);
-	if (ret) { return ret; }
+	if (ret)
+	{
+		i2st_buffer_release(i2s_device, &tx_buffer);
+		return ret;
+	}
 
 	// Enable DMA
 	ret = i2st_dma_start(dma_chan_tx, tx_buffer.dma_address, tx_buffer.size, tx_buffer.period_size, DMA_MEM_TO_DEV, dma_tx_complete);
-	if (ret) { return ret; }
+	if (ret)
+	{
+		i2st_buffer_release(i2s_device, &tx_buffer);
+		i2st_buffer_release(i2s_device, &rx_buffer);
+		return ret;
+	}
+
 	ret = i2st_dma_start(dma_chan_rx, rx_buffer.dma_address, rx_buffer.size, rx_buffer.period_size, DMA_DEV_TO_MEM, dma_rx_complete);
-	if (ret) { return ret; }
+	if (ret)
+	{
+		i2st_dma_stop(dma_chan_tx);
+		i2st_buffer_release(i2s_device, &tx_buffer);
+		i2st_buffer_release(i2s_device, &rx_buffer);
+		return ret;
+	}
 
 	// Start I2S
 	i2st_i2s_start(regmap);
@@ -270,9 +286,7 @@ static int i2st_start(unsigned int period_frames, unsigned int period_count)
 static void i2st_stop(void)
 {
 	i2st_i2s_stop(regmap);
-	i2st_buffer_reset_xrun(&tx_buffer);
-	i2st_buffer_reset_xrun(&rx_buffer);
-	
+
 	running = false;
 }
 

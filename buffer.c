@@ -59,8 +59,12 @@ int i2st_buffer_init(struct device* dev, struct i2st_buffer* buffer, unsigned in
 
 void i2st_buffer_release(struct device* dev, struct i2st_buffer* buffer)
 {
-    evl_destroy_flag(&buffer->flag);
-    i2st_dma_release(dev, buffer->size, buffer->ptr, buffer->dma_address);
+	if (buffer->ptr)
+	{
+    	evl_destroy_flag(&buffer->flag);
+    	i2st_dma_release(dev, buffer->size, buffer->ptr, buffer->dma_address);
+	}
+
     memset(buffer, 0, sizeof(struct i2st_buffer));
 }
 
