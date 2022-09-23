@@ -2,6 +2,34 @@
 
 #include "dma.h"
 
+static int prepare_io(struct i2st_buffer* buffer, size_t size)
+{
+	int ret;
+
+	if (size != buffer->period_size)
+	{
+		printk(KERN_ALERT "IO size %lu doesn't match period size %lu", size, buffer->period_size);
+		return -EINVAL;
+	}
+
+    // Wait until there's data available
+	ret = i2st_buffer_wait_available(buffer);
+	if (ret) { return ret; }
+
+	return 0;
+}
+
+static void advance_user_offset(struct i2st_buffer* buffer)
+{
+	unsigned long flags;
+
+    buffer->user_offset = (buffer->user_offset + buffer->period_size) % buffer->size;
+
+	local_irq_save(flags);
+	buffer->available -= buffer->period_size;
+	local_irq_restore(flags);
+}
+
 int i2st_buffer_init(struct device* dev, struct i2st_buffer* buffer, unsigned int period_frames, unsigned int period_count)
 {
     int ret;
@@ -38,20 +66,12 @@ void i2st_buffer_release(struct device* dev, struct i2st_buffer* buffer)
 
 ssize_t i2st_buffer_read(struct i2st_buffer* buffer, const char __user *ptr, size_t size)
 {
-	unsigned long flags;
+	int ret;
 	unsigned long error_count;
 
-	if (size != buffer->period_size)
-	{
-		printk(KERN_ALERT "Read size %lu doesn't match period size %lu", size, buffer->period_size);
-		return -EINVAL;
-	}
-
-    // Wait until there's data available
-	if (i2st_buffer_wait_available(buffer))
-	{
-		return 0;
-	}
+	ret = prepare_io(buffer, size);
+	if (ret == EXRUN) { return 0; }
+	else if (ret) { return ret; }
 
 	error_count = raw_copy_to_user(ptr, buffer->ptr + buffer->user_offset, size);
 	if (error_count != 0)
@@ -60,31 +80,19 @@ ssize_t i2st_buffer_read(struct i2st_buffer* buffer, const char __user *ptr, siz
 		return -EFAULT;
 	}
 
-    buffer->user_offset = (buffer->user_offset + buffer->period_size) % buffer->size;
-
-	local_irq_save(flags);
-	buffer->available -= buffer->period_size;
-	local_irq_restore(flags);
+	advance_user_offset(buffer);
 
 	return size;
 }
 
 ssize_t i2st_buffer_write(struct i2st_buffer* buffer, const char __user *ptr, size_t size)
 {
-	unsigned long flags;
+	int ret;
 	unsigned long error_count;
 
-	if (size != buffer->period_size)
-	{
-		printk(KERN_ALERT "Write size %lu doesn't match period size %lu", size, buffer->period_size);
-		return -EINVAL;
-	}
-
-    // Wait until there's space available
-	if (i2st_buffer_wait_available(buffer))
-	{
-		return 0;
-	}
+	ret = prepare_io(buffer, size);
+	if (ret == EXRUN) { return 0; }
+	else if (ret) { return ret; }
 
 	error_count = raw_copy_from_user(buffer->ptr + buffer->user_offset, ptr, size);
 	if (error_count != 0)
@@ -93,11 +101,7 @@ ssize_t i2st_buffer_write(struct i2st_buffer* buffer, const char __user *ptr, si
 		return -EFAULT;
 	}
 
-    buffer->user_offset = (buffer->user_offset + buffer->period_size) % buffer->size;
-
-	local_irq_save(flags);
-	buffer->available -= buffer->period_size;
-	local_irq_restore(flags);
+	advance_user_offset(buffer);
 
 	return size;
 }
@@ -137,7 +141,7 @@ int i2st_buffer_wait_available(struct i2st_buffer* buffer)
 
 	if (xruns)
 	{
-		return -1;
+		return EXRUN;
 	}
 
 	while (i2st_buffer_available(buffer) < buffer->period_size)

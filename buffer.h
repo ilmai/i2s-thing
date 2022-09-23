@@ -4,6 +4,8 @@
 #include <evl/flag.h>
 #include <linux/dmaengine.h>
 
+#define EXRUN 100
+
 struct i2st_buffer
 {
 	char* ptr;
