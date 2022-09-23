@@ -18,8 +18,9 @@ struct i2st_settings
 
 // IOCTL
 #define I2S_THING_IOCTL	0x10
-#define I2S_THING_START _IOW(I2S_THING_IOCTL, 0x01, struct i2st_settings)
-#define I2S_THING_STOP  _IO(I2S_THING_IOCTL, 0x02)
+#define I2S_THING_START 	_IOW(I2S_THING_IOCTL, 0x01, struct i2st_settings)
+#define I2S_THING_STOP  	 _IO(I2S_THING_IOCTL, 0x02)
+#define I2S_THING_RESTART	 _IO(I2S_THING_IOCTL, 0x03)
 
 static int major_number = 0;
 static struct class *device_class = NULL;
@@ -70,7 +71,7 @@ static struct platform_driver i2st_driver = {
 	},
 };
 
-static void i2st_stop(void);
+static int i2st_stop(void);
 
 static void dma_tx_complete(void *param)
 {
@@ -208,13 +209,13 @@ static int i2st_open(struct inode *inode, struct file *file)
 
 static int i2st_release(struct inode *inode, struct file *file)
 {
-	if (dma_chan_tx) i2st_dma_stop(dma_chan_tx);
-	if (dma_chan_rx) i2st_dma_stop(dma_chan_rx);
+	int ret;
 
-	i2st_stop();
-
-	i2st_buffer_release(i2s_device, &tx_buffer);
-	i2st_buffer_release(i2s_device, &rx_buffer);
+	if (running)
+	{
+		ret = i2st_stop();
+		if (ret) return ret;
+	}
 
 	if (efile.filp)
 	{
@@ -283,11 +284,38 @@ static int i2st_start(unsigned int period_frames, unsigned int period_count)
 	return 0;
 }
 
-static void i2st_stop(void)
+static int i2st_stop(void)
 {
+	if (!running)
+	{
+		return -EINVAL;
+	}
+
 	i2st_i2s_stop(regmap);
 
+	if (dma_chan_tx) i2st_dma_stop(dma_chan_tx);
+	if (dma_chan_rx) i2st_dma_stop(dma_chan_rx);
+
+	i2st_buffer_release(i2s_device, &tx_buffer);
+	i2st_buffer_release(i2s_device, &rx_buffer);
+
 	running = false;
+	return 0;
+}
+
+static int i2st_restart(void)
+{
+	if (!running)
+	{
+		return -EINVAL;
+	}
+
+	i2st_i2s_stop(regmap);
+	i2st_buffer_reset(&tx_buffer);
+	i2st_buffer_reset(&rx_buffer);
+	i2st_i2s_start(regmap);
+
+	return 0;
 }
 
 static long i2st_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -299,8 +327,10 @@ static long i2st_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return i2st_start(settings->period_frames, settings->period_count);
 
 	case I2S_THING_STOP:
-		i2st_stop();
-		return 0;
+		return i2st_stop();
+
+	case I2S_THING_RESTART:
+		return i2st_restart();
 
 	default:
 		return -EINVAL;

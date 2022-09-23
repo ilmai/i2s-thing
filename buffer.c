@@ -156,11 +156,13 @@ int i2st_buffer_wait_available(struct i2st_buffer* buffer)
 	return 0;
 }
 
-void i2st_buffer_reset_xrun(struct i2st_buffer* buffer)
+void i2st_buffer_reset(struct i2st_buffer* buffer)
 {
 	unsigned long flags;
 
 	local_irq_save(flags);
 	buffer->xruns = 0;
+	buffer->user_offset = buffer->dma_offset;
+	buffer->available = 0;
 	local_irq_restore(flags);
 }

@@ -28,6 +28,6 @@ ssize_t i2st_buffer_write(struct i2st_buffer* buffer, const char __user *ptr, si
 void i2st_buffer_dma_complete(struct i2st_buffer* buffer);
 size_t i2st_buffer_available(struct i2st_buffer* buffer);
 int i2st_buffer_wait_available(struct i2st_buffer* buffer);
-void i2st_buffer_reset_xrun(struct i2st_buffer* buffer);
+void i2st_buffer_reset(struct i2st_buffer* buffer);
 
 #endif
