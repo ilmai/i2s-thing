@@ -13,6 +13,8 @@ struct i2st_buffer
     size_t period_size;
     size_t dma_offset;
     size_t user_offset;
+    size_t available;
+    unsigned long xruns;
 
     struct evl_flag flag;
 };
@@ -23,5 +25,7 @@ ssize_t i2st_buffer_read(struct i2st_buffer* buffer, const char __user *ptr, siz
 ssize_t i2st_buffer_write(struct i2st_buffer* buffer, const char __user *ptr, size_t size);
 void i2st_buffer_dma_complete(struct i2st_buffer* buffer);
 size_t i2st_buffer_available(struct i2st_buffer* buffer);
+int i2st_buffer_wait_available(struct i2st_buffer* buffer);
+void i2st_buffer_reset_xrun(struct i2st_buffer* buffer);
 
 #endif

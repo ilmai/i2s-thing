@@ -19,6 +19,7 @@ struct i2st_settings
 // IOCTL
 #define I2S_THING_IOCTL	0x10
 #define I2S_THING_START _IOW(I2S_THING_IOCTL, 0x01, struct i2st_settings)
+#define I2S_THING_STOP  _IO(I2S_THING_IOCTL, 0x02)
 
 static int major_number = 0;
 static struct class *device_class = NULL;
@@ -33,6 +34,8 @@ static struct regmap *regmap = NULL;
 
 static struct i2st_buffer tx_buffer;
 static struct i2st_buffer rx_buffer;
+
+static bool running = false;
 
 static int i2st_probe(struct platform_device *pdev);
 static int i2st_remove(struct platform_device *pdev);
@@ -66,6 +69,8 @@ static struct platform_driver i2st_driver = {
 		.of_match_table = i2st_of_match,
 	},
 };
+
+static void i2st_stop(void);
 
 static void dma_tx_complete(void *param)
 {
@@ -206,7 +211,7 @@ static int i2st_release(struct inode *inode, struct file *file)
 	i2st_dma_stop(dma_chan_tx);
 	i2st_dma_stop(dma_chan_rx);
 
-	i2st_i2s_stop(regmap);
+	i2st_stop();
 
 	i2st_buffer_release(i2s_device, &tx_buffer);
 	i2st_buffer_release(i2s_device, &rx_buffer);
@@ -238,7 +243,7 @@ static int i2st_start(unsigned int period_frames, unsigned int period_count)
 	int ret;
 
 	// Don't allow calling multiple times
-	if (tx_buffer.ptr)
+	if (running)
 	{
 		return -EBUSY;
 	}
@@ -258,7 +263,17 @@ static int i2st_start(unsigned int period_frames, unsigned int period_count)
 	// Start I2S
 	i2st_i2s_start(regmap);
 
+	running = true;
 	return 0;
+}
+
+static void i2st_stop(void)
+{
+	i2st_i2s_stop(regmap);
+	i2st_buffer_reset_xrun(&tx_buffer);
+	i2st_buffer_reset_xrun(&rx_buffer);
+	
+	running = false;
 }
 
 static long i2st_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -268,6 +283,10 @@ static long i2st_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case I2S_THING_START:
 		struct i2st_settings __user *settings = (struct i2st_settings __user *)arg;
 		return i2st_start(settings->period_frames, settings->period_count);
+
+	case I2S_THING_STOP:
+		i2st_stop();
+		return 0;
 
 	default:
 		return -EINVAL;

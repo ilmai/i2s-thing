@@ -38,6 +38,7 @@ void i2st_buffer_release(struct device* dev, struct i2st_buffer* buffer)
 
 ssize_t i2st_buffer_read(struct i2st_buffer* buffer, const char __user *ptr, size_t size)
 {
+	unsigned long flags;
 	unsigned long error_count;
 
 	if (size != buffer->period_size)
@@ -46,11 +47,11 @@ ssize_t i2st_buffer_read(struct i2st_buffer* buffer, const char __user *ptr, siz
 		return -EINVAL;
 	}
 
-    // Wait on flag if there's no data to read
-    while (i2st_buffer_available(buffer) < buffer->period_size)
-    {
-        evl_wait_flag(&buffer->flag);
-    }
+    // Wait until there's data available
+	if (i2st_buffer_wait_available(buffer))
+	{
+		return 0;
+	}
 
 	error_count = raw_copy_to_user(ptr, buffer->ptr + buffer->user_offset, size);
 	if (error_count != 0)
@@ -61,11 +62,16 @@ ssize_t i2st_buffer_read(struct i2st_buffer* buffer, const char __user *ptr, siz
 
     buffer->user_offset = (buffer->user_offset + buffer->period_size) % buffer->size;
 
+	local_irq_save(flags);
+	buffer->available -= buffer->period_size;
+	local_irq_restore(flags);
+
 	return size;
 }
 
 ssize_t i2st_buffer_write(struct i2st_buffer* buffer, const char __user *ptr, size_t size)
 {
+	unsigned long flags;
 	unsigned long error_count;
 
 	if (size != buffer->period_size)
@@ -74,11 +80,11 @@ ssize_t i2st_buffer_write(struct i2st_buffer* buffer, const char __user *ptr, si
 		return -EINVAL;
 	}
 
-    // Wait on flag if there's no space to write
-    while (i2st_buffer_available(buffer) < buffer->period_size)
-    {
-        evl_wait_flag(&buffer->flag);
-    }
+    // Wait until there's space available
+	if (i2st_buffer_wait_available(buffer))
+	{
+		return 0;
+	}
 
 	error_count = raw_copy_from_user(buffer->ptr + buffer->user_offset, ptr, size);
 	if (error_count != 0)
@@ -89,32 +95,64 @@ ssize_t i2st_buffer_write(struct i2st_buffer* buffer, const char __user *ptr, si
 
     buffer->user_offset = (buffer->user_offset + buffer->period_size) % buffer->size;
 
+	local_irq_save(flags);
+	buffer->available -= buffer->period_size;
+	local_irq_restore(flags);
+
 	return size;
 }
 
 void i2st_buffer_dma_complete(struct i2st_buffer* buffer)
 {
     buffer->dma_offset = (buffer->dma_offset + buffer->period_size) % buffer->size;
+	buffer->available += buffer->period_size;
+	if (buffer->available > buffer->size)
+	{
+		++buffer->xruns;
+	}
+
     evl_raise_flag(&buffer->flag);
 }
 
 size_t i2st_buffer_available(struct i2st_buffer* buffer)
 {
+	size_t available;
 	unsigned long flags;
-    size_t dma_offset;
-    size_t user_offset;
-	size_t buffer_size;
 
 	local_irq_save(flags);
-	buffer_size = buffer->size;
-	dma_offset = buffer->dma_offset;
-	user_offset = buffer->user_offset;
+	available = buffer->available;
 	local_irq_restore(flags);
 
-    if (dma_offset >= user_offset)
-    {
-        return dma_offset - user_offset;
+	return available;
+}
+
+int i2st_buffer_wait_available(struct i2st_buffer* buffer)
+{
+	unsigned long flags;
+	unsigned long xruns;
+
+	local_irq_save(flags);
+	xruns = buffer->xruns;
+	local_irq_restore(flags);
+
+	if (xruns)
+	{
+		return -1;
+	}
+
+	while (i2st_buffer_available(buffer) < buffer->period_size)
+	{
+        evl_wait_flag(&buffer->flag);
     }
 
-    return buffer_size - user_offset + dma_offset;
+	return 0;
+}
+
+void i2st_buffer_reset_xrun(struct i2st_buffer* buffer)
+{
+	unsigned long flags;
+
+	local_irq_save(flags);
+	buffer->xruns = 0;
+	local_irq_restore(flags);
 }
