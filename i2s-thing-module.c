@@ -54,7 +54,7 @@ static struct file_operations i2st_fops =
 	.release = i2st_release,
 	.oob_read = i2st_read,
 	.oob_write = i2st_write,
-	.unlocked_ioctl = i2st_ioctl,
+	.oob_ioctl = i2st_ioctl,
 };
 
 static const struct of_device_id i2st_of_match[] = {
